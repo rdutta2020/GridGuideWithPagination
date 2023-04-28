@@ -1,4 +1,7 @@
 package com.jetpack.gridguidedemo
 
-class Paginator {
+interface Paginator<Int, Item> {
+    suspend fun loadNextItems(rowNumber: Int)
+    fun reset()
+    fun saveCurrentPageNumber(pageNumber: Int)
 }

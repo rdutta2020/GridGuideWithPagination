@@ -5,6 +5,7 @@ package com.jetpack.gridguidedemo
 
 import android.annotation.SuppressLint
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.animateContentSize
@@ -15,6 +16,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.snapping.SnapLayoutInfoProvider
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.horizontalScroll
@@ -22,7 +24,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.*
@@ -37,6 +38,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.jetpack.gridguidedemo.ui.theme.GridGuideDemoTheme
 
 class MainActivity : ComponentActivity() {
@@ -44,8 +47,10 @@ class MainActivity : ComponentActivity() {
 
     lateinit var state: ScrollState
     var fixedColumnWidth: Int = 0
-    var lazyRowWidth: Int = 0
-    val timeslotsCount: Int = 100 //672
+    var maxProgramCellWidth: Int = 0
+    val timeslotsCount: Int = 100
+    lateinit var viewModel: MainViewModel
+    var snapStepSize : Float = -1F
 
     @SuppressLint(
         "UnusedMaterial3ScaffoldPaddingParameter",
@@ -53,18 +58,19 @@ class MainActivity : ComponentActivity() {
     )
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        initialize()
-
         setContent {
             state = rememberScrollState()
             fixedColumnWidth = 128
-            lazyRowWidth = LocalConfiguration.current.screenWidthDp - fixedColumnWidth
+            maxProgramCellWidth = LocalConfiguration.current.screenWidthDp - fixedColumnWidth
             GridGuideDemoTheme(darkTheme = false) {
+                viewModel = viewModel<MainViewModel>()
+                val viewModelState = viewModel.state
+
                 val lazyListState = rememberLazyListState()
                 Scaffold(
                     content = {
                         Box(modifier = Modifier.fillMaxWidth()) {
-                            MainContent(lazyListState = lazyListState)
+                            MainContent(lazyListState = lazyListState, viewModelState, viewModel)
                             TopBar(lazyListState = lazyListState)
                         }
                     }
@@ -74,7 +80,11 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    fun MainContent(lazyListState: LazyListState) {
+    fun MainContent(
+        lazyListState: LazyListState,
+        viewModelState: MainViewModel.ScreenState,
+        viewModel: MainViewModel
+    ) {
         val padding by animateDpAsState(
             targetValue = if (lazyListState.isScrolled) 0.dp else TOP_BAR_HEIGHT,
             animationSpec = tween(durationMillis = 300)
@@ -83,8 +93,8 @@ class MainActivity : ComponentActivity() {
         Column(
             modifier = Modifier.padding(top = padding)
         ) {
-            DrawHeader()
-            DrawGrid(lazyListState)
+            //DrawHeader()
+            DrawGrid(lazyListState, viewModel, viewModelState)
         }
     }
 
@@ -109,33 +119,65 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    fun DrawGrid(scrollState: LazyListState) {
+    fun DrawGrid(
+        scrollState: LazyListState,
+        viewModel: MainViewModel,
+        viewModelState: MainViewModel.ScreenState
+    ) {
         LazyColumn(
-            state = scrollState
+            //  state = scrollState
         ) {
-            items(channelProgramData) { channelProgram ->
-                DrawGridRowItem(item = channelProgram)
+            items(viewModelState.items.size) { rowNumber ->// "rowNumber" index starts from 0
+                Log.d(
+                    "GrideGuide",
+                    "Calling DrawGridRowItem RowNumber : $rowNumber ProgramList : ${viewModelState.items[rowNumber]}"
+                )
+                DrawGridRowItem(rowNumber)
             }
         }
     }
 
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
-    fun DrawHorizontalList(list: ArrayList<String>, height: Int) {
-
+    fun DrawHorizontalList(
+        rowNumber: Int,
+        height: Int
+    ) {
         val lazyListState = rememberLazyListState()
         val snappingLayout =
-            remember(lazyListState) { CreateSnapLayoutInfoProvider(timeslotsCount, state) }
+            remember(lazyListState) {
+                CreateSnapLayoutInfoProvider(
+                    MainViewModel.PAGESIZE * (viewModel.state.page[rowNumber] + 1),
+                    state
+                )
+            }
         val flingBehavior = rememberSnapFlingBehavior(snappingLayout)
 
         LazyRow(
             modifier = Modifier
                 .horizontalScroll(state)
-                .width((timeslotsCount * lazyRowWidth).dp),
-            state = lazyListState,
-            flingBehavior = flingBehavior
+                .width((MainViewModel.PAGESIZE * (viewModel.state.page[rowNumber] + 1) * maxProgramCellWidth).dp),
+                state = lazyListState,
+                flingBehavior = flingBehavior
         ) {
-            items(list) { item ->
+            Log.d(
+                "GrideGuide",
+                "DrawHorizontalList rowNumber: $rowNumber ItemSize: " + viewModel.state.items[rowNumber].size
+            )
+
+            items(viewModel.state.items[rowNumber].size) { rowItemIndex ->
+                val item = viewModel.state.items[rowNumber][rowItemIndex]
+                if (rowItemIndex >= viewModel.state.items[rowNumber].size - 1
+                    && !viewModel.state.endReached
+                    && !viewModel.state.isLoading
+                    && state.isScrollInProgress
+                ) {
+                    Log.d(
+                        "GrideGuide",
+                        "Calling loadNextItems for rowNumber : $rowNumber rowItemIndex: $rowItemIndex"
+                    )
+                    viewModel.loadNextItems(rowNumber)
+                }
                 DrawRowListItem(name = item, height = height)
             }
         }
@@ -148,18 +190,20 @@ class MainActivity : ComponentActivity() {
     ): SnapLayoutInfoProvider = object : SnapLayoutInfoProvider {
         override fun Density.calculateApproachOffset(initialVelocity: Float): Float = 0f
         override fun Density.calculateSnapStepSize(): Float {
-            return 0f
+            // we are saving snapStepSize once at the beginning when first snap happens
+            // not changing this value during each snap(which should be ideal) because when horizontal pagination happens this value does not change as expected (needs to debug in future)
+            if(snapStepSize == -1F){// not initialized yet
+                snapStepSize = scrollState.maxValue.toFloat() / (itemCount - 1)
+            }
+            return snapStepSize
         }
 
         override fun Density.calculateSnappingOffsetBounds(): ClosedFloatingPointRange<Float> {
-            val bound0 = -scrollState.value % snapStepSize()
-            val bound1 = snapStepSize() + bound0
+            val bound0 = -scrollState.value % calculateSnapStepSize()
+            val bound1 = calculateSnapStepSize() + bound0
 
             return (if (bound0 >= 0 && bound1 < 0) bound1.rangeTo(bound0) else bound0.rangeTo(bound1))
         }
-
-        fun snapStepSize(): Float =
-            scrollState.maxValue.toFloat() / (itemCount - 1)
     }
 
     @Composable
@@ -168,15 +212,20 @@ class MainActivity : ComponentActivity() {
         height: Int
     ) {
         var fraction = 1F
-        if (name == "P04a" || name == "P07a") {
+
+        // here starts hack to make cell width dynamic based on duration
+        val strs = name.split("-").toTypedArray()
+        val col = strs[strs.size - 1].toInt()
+        val row = strs[strs.size - 2].toInt()
+        // here hack ends
+
+        if (row % 4 == 0 && col % 2 != 0) {
             fraction = 0.5F
         }
-        if (name == "P02b" || name == "P08b" || name == "P01c" || name == "P05c") {
-            fraction = 0.5F
-        }
+
         Box(
             modifier = Modifier
-                .width((lazyRowWidth * fraction).dp)
+                .width((maxProgramCellWidth * fraction).dp)
                 .border(BorderStroke(1.dp, SolidColor(Color.Blue)))
                 .height(height.dp)
         ) {
@@ -195,21 +244,24 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    fun DrawGridRowItem(
-        item: ChannelProgramData
-    ) {
-        Box(modifier = Modifier.height(30.dp)) {
-            Row(modifier = Modifier.fillMaxWidth()) {
+    fun DrawGridRowItem(rowNumber: Int) {
+        val channelNumber = rowNumber+1
+        Box() {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Box(
                     modifier = Modifier
                         .width(fixedColumnWidth.dp)
                         .border(BorderStroke(1.dp, SolidColor(Color.Blue)))
-                        .height(30.dp)
+                        .height(60.dp)
                 ) {
                     Text(
                         modifier = Modifier
                             .align(Alignment.Center),
-                        text = item.name,
+                        //text = item.name,
+                        text = "C$channelNumber",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = TextStyle(
@@ -218,13 +270,13 @@ class MainActivity : ComponentActivity() {
                         )
                     )
                 }
-                DrawHorizontalList(timeslots, 30)
+                DrawHorizontalList(rowNumber, 60)
             }
         }
     }
 
 
-    @Composable
+/*    @Composable
     fun DrawHeader() {
         Box(modifier = Modifier.height(30.dp)) {
             Row(modifier = Modifier.fillMaxWidth()) {
@@ -246,36 +298,16 @@ class MainActivity : ComponentActivity() {
                         )
                     )
                 }
-                DrawHorizontalList(timeslots, 30)
+                DrawHorizontalList(
+                    30,
+                    viewModelState = MainViewModel.ScreenState(),
+                    viewModel = MainViewModel()
+                )
             }
         }
-    }
-
-
-    private var channelProgramData: ArrayList<ChannelProgramData> = ArrayList()
-
-    private var timeslots: ArrayList<String> = ArrayList()
-
-    private fun initialize() {
-        for (row in 1..400) {
-            val name = "C$row"
-            val programList: ArrayList<String> = ArrayList()
-            for (col in 1..672) {
-                programList.add(String.format("P-%d-%d", row, col))
-            }
-            channelProgramData.add(ChannelProgramData(name, programList))
-        }
-        for (t in 1..100) {
-            timeslots.add("T$t")
-        }
-    }
+    }*/
 }
 
 val TOP_BAR_HEIGHT = 56.dp
 val LazyListState.isScrolled: Boolean
     get() = firstVisibleItemIndex > 0 || firstVisibleItemScrollOffset > 0
-
-data class ChannelProgramData(
-    val name: String,
-    val programList: ArrayList<String>
-)

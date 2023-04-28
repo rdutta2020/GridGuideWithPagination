@@ -1,4 +1,6 @@
 package com.jetpack.gridguidedemo
 
-class ChannelProgramData {
-}
+data class ChannelProgramData(
+    val name: String,
+    val programList: ArrayList<String>
+)
